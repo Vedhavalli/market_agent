@@ -1,0 +1,9 @@
+yfinance>=0.2.40
+pandas>=2.0
+numpy>=1.24
+rich>=13.0
+streamlit>=1.37
+streamlit-searchbox>=0.1.20
+tomli>=2.0; python_version < "3.11"
+# optional, only for `report --ai`:
+# anthropic>=0.40

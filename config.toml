@@ -1,0 +1,54 @@
+# Market Agent configuration. Edit freely.
+# Yahoo Finance tickers: NSE stocks need no suffix here (".NS" is added); use "XYZ.BO" for BSE.
+
+[general]
+timezone    = "Asia/Kolkata"   # market timezone used by the daemon
+report_time = "16:00"          # daily report time (IST), after the 15:30 close
+data_dir    = "data"           # portfolio.csv, realized.csv
+report_dir  = "reports"        # saved HTML reports
+
+[ai]
+model = "claude-sonnet-5-5"    # used only with --ai (needs ANTHROPIC_API_KEY)
+
+[portfolio]
+max_position_pct = 25          # alert if one holding exceeds this share of the portfolio
+near_stop_pct    = 3           # alert when price is within this % above your stop-loss
+big_move_pct     = 4           # alert on a one-day move at least this large
+
+[indices]                      # the first entry is used as the "session date" reference
+"Nifty 50"   = "^NSEI"
+"Sensex"     = "^BSESN"
+"Bank Nifty" = "^NSEBANK"
+"India VIX"  = "^INDIAVIX"
+
+[technicals]
+indices = ["Nifty 50", "Bank Nifty"]   # columns in the technical-levels table
+
+[swing]                        # `python agent.py swing` / `analyze SYMBOL`
+min_score         = 7          # conditions (of 9) that must agree for a BUY / SELL signal
+atr_stop_min      = 1.0        # stop-loss distance from entry, in ATRs (min / max)
+atr_stop_max      = 2.5
+t1_rr             = 1.5        # target 1 = 1.5 x risk
+t2_rr             = 3.0        # target 2 = 3 x risk
+max_hold_days     = 20         # time stop (sessions) used by the backtest
+max_extension_atr = 2.5        # skip if price is this many ATRs beyond the 20-EMA (don't chase)
+history           = "10y"      # data used for analysis + backtest (positional / long-term views need years)
+
+[sectors]
+"IT"       = "^CNXIT"
+"Auto"     = "^CNXAUTO"
+"Pharma"   = "^CNXPHARMA"
+"FMCG"     = "^CNXFMCG"
+"Metal"    = "^CNXMETAL"
+"Realty"   = "^CNXREALTY"
+"Energy"   = "^CNXENERGY"
+"PSU Bank" = "^CNXPSUBANK"
+
+[watchlist]
+# Stocks scanned every day for movers and buy/sell-watch screens. Replace with your own list.
+symbols = [
+  "RELIANCE", "HDFCBANK", "ICICIBANK", "SBIN", "INFY", "TCS", "ITC", "LT", "BHARTIARTL",
+  "AXISBANK", "KOTAKBANK", "HINDUNILVR", "BAJFINANCE", "MARUTI", "SUNPHARMA", "NTPC",
+  "POWERGRID", "ONGC", "TATASTEEL", "ULTRACEMCO", "ASIANPAINT", "TITAN", "WIPRO",
+  "HCLTECH", "TECHM", "DRREDDY", "CIPLA", "TRENT",
+]

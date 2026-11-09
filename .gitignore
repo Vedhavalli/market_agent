@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets (API keys)
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Personal data: holdings, trades, cached downloads
+data/
+
+# Generated reports
+reports/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Scratch output
+*.log
+*.pkl
+analyze_out.txt
