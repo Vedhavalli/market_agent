@@ -15,31 +15,34 @@ from util import num
 
 cfg = agent.load_config(None)
 FRESH_FOR = 3600  # seconds a screen result is shown without asking for a refresh
+CLEAR_COOLDOWN = 10 * 60  # seconds between cache clears (protects the shared Yahoo quota)
 
 
 @st.cache_resource
 def store() -> dict:
-    """Shared by all browser sessions: finished results {(universe, code_version): result} and the running job."""
-    return {"results": {}, "job": None}
+    """Shared by all browser sessions so one screen serves everyone: finished results
+    {(universe, code_version): result}, the running job and when the cache was last cleared."""
+    return {"results": {}, "job": None, "cleared": 0.0}
 
 
 def start(key: tuple, universe: str, stocks: list[tuple[str, str]]) -> None:
-    """Run the screen in a background thread so it survives reruns, tab switches and closed browser tabs."""
+    """Run the screen in a background thread so it survives reruns, tab switches and closed browser tabs.
+    Reuses data.py's cache: prices younger than 15 min and statements younger than a day are not re-downloaded."""
     job = {"key": key, "universe": universe, "done": 0, "total": len(stocks), "last": "", "t0": time.time(),
            "stop": threading.Event(), "error": None}
+    s = store()
 
     def work() -> None:
         try:
-            data._cache.clear()  # fresh prices and results
-            res = screener.run(cfg, stocks, lambda d, t, s: job.update(done=d, last=s), stop=job["stop"].is_set)
+            res = screener.run(cfg, stocks, lambda d, t, sym: job.update(done=d, last=sym), stop=job["stop"].is_set)
             if res["rows"]:
-                store()["results"][key] = {**res, "time": time.time(), "secs": time.time() - job["t0"]}
+                s["results"][key] = {**res, "time": time.time(), "secs": time.time() - job["t0"]}
         except Exception as e:  # shown on the page
             job["error"] = f"{type(e).__name__}: {e}"
         finally:
             job["finished"] = True
 
-    store()["job"] = job
+    s["job"] = job
     threading.Thread(target=work, daemon=True, name="screener").start()
 
 
@@ -108,16 +111,29 @@ if running:
 age = time.time() - res["time"] if res else None
 label = (f"▶️ Run screener on {len(stocks)} stocks" if not res else
          "🔄 Refresh" + (" (results are over an hour old)" if age > FRESH_FOR else ""))
-if not running and st.button(label, type="primary" if not res or age > FRESH_FOR else "secondary"):
-    start(key, universe, stocks)
-    st.rerun()
+if not running:
+    b1, b2, _ = st.columns([3, 2, 5])
+    if b1.button(label, type="primary" if not res or age > FRESH_FOR else "secondary",
+                 help="Re-uses prices fetched in the last 15 min and statements fetched in the last day."):
+        start(key, universe, stocks)
+        st.rerun()
+    wait = CLEAR_COOLDOWN - (time.time() - store()["cleared"])
+    if res and b2.button("🗑️ Clear cache", disabled=wait > 0,
+                         help=(f"Available again in {wait / 60:.0f} min." if wait > 0 else
+                               f"Discard the stored {universe} results and cached prices (for everyone) so the next "
+                               "run fetches live prices. Company statements stay cached for a day.")):
+        for k in [k for k in store()["results"] if k[0] == universe]:
+            store()["results"].pop(k, None)
+        data.clear(prices_only=True)
+        store()["cleared"] = time.time()
+        st.rerun()
 
 if not res:
     if not running:
         st.info(f"Press **Run screener**. Each stock gets the full analysis, so it takes about "
                 f"{max(1, len(stocks) * 3 // 60)}-{max(2, len(stocks) * 6 // 60)} minutes for {len(stocks)} stocks "
                 "(it runs in the background; you can stop it early and see the results so far). Results are then "
-                "kept for everyone for an hour.")
+                "shared with everyone using the app until refreshed.")
     st.stop()
 
 rk = screener.rank(res["rows"], style, n=10, max_per_sector=2 if diversify else None)

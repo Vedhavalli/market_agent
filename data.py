@@ -7,7 +7,39 @@ from pathlib import Path
 
 import pandas as pd
 
-_cache: dict = {}
+_cache: dict = {}  # key -> (saved_at, value); shared by every user of the process
+last_error: dict[str, str] = {}  # yf symbol -> reason the last history() fetch failed
+
+# How long fetched data is reused before asking Yahoo again (fewer requests = fewer rate-limit blocks).
+PRICE_TTL = 15 * 60          # daily prices (Yahoo is ~15 min delayed anyway)
+FIN_TTL = 24 * 3600          # statements / analyst data change at most a few times a quarter
+PROFILE_TTL = 7 * 24 * 3600  # name, sector, industry
+MISS_TTL = 10 * 60           # failed lookups, so a blocked symbol is not hammered
+
+
+def _get(key, ttl: float):
+    hit = _cache.get(key)
+    if hit is None:
+        return False, None
+    missing = hit[1] is None or (isinstance(hit[1], dict) and not hit[1])
+    if time.time() - hit[0] < (min(ttl, MISS_TTL) if missing else ttl):
+        return True, hit[1]
+    return False, None
+
+
+def _put(key, value):
+    _cache[key] = (time.time(), value)
+    return value
+
+
+def clear(prices_only: bool = False, symbol: str | None = None) -> None:
+    """Forget cached data: everything, only price histories, and/or only one symbol."""
+    ys = yf_symbol(symbol) if symbol else None
+    for k in list(_cache):
+        is_price = k[0] not in ("profile", "fin")
+        sym = k[0] if is_price else k[1]
+        if (not prices_only or is_price) and (ys is None or sym == ys):
+            _cache.pop(k, None)
 
 
 def yf_symbol(s: str) -> str:
@@ -18,22 +50,29 @@ def yf_symbol(s: str) -> str:
     return s + ".NS"
 
 
-def history(symbol: str, period: str = "2y") -> pd.DataFrame | None:
+def history(symbol: str, period: str = "2y", retries: int = 3) -> pd.DataFrame | None:
+    """Daily OHLCV. Retries with backoff because Yahoo rate-limits shared cloud IPs (e.g. Streamlit Cloud);
+    failures are only remembered briefly (MISS_TTL)."""
     key = (yf_symbol(symbol), period)
-    if key in _cache:
-        return _cache[key]
-    df = None
-    try:
-        import yfinance as yf
+    ok, val = _get(key, PRICE_TTL)
+    if ok:
+        return val
+    import yfinance as yf
 
-        raw = yf.Ticker(key[0]).history(period=period, interval="1d", auto_adjust=False)
-        if raw is not None and not raw.empty:
-            df = raw[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"]).copy()
-            df.index = pd.to_datetime(df.index).tz_localize(None)
-    except Exception:
-        df = None
-    _cache[key] = df
-    return df
+    for attempt in range(retries):
+        try:
+            raw = yf.Ticker(key[0]).history(period=period, interval="1d", auto_adjust=False, raise_errors=True)
+            if raw is not None and not raw.empty:
+                df = raw[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"]).copy()
+                df.index = pd.to_datetime(df.index).tz_localize(None)
+                last_error.pop(key[0], None)
+                return _put(key, df)
+            last_error[key[0]] = "Yahoo returned no price history"
+        except Exception as e:
+            last_error[key[0]] = f"{type(e).__name__}: {e}"
+        if attempt < retries - 1:
+            time.sleep(2 * (attempt + 1))
+    return _put(key, None)
 
 
 def fetch_many(symbols: list[str], workers: int = 6, period: str = "2y") -> dict[str, pd.DataFrame | None]:
@@ -48,8 +87,9 @@ def profile(symbol: str) -> dict:
     """Company name, sector and industry from Yahoo search ({} when unavailable)."""
     ys = yf_symbol(symbol)
     key = ("profile", ys)
-    if key in _cache:
-        return _cache[key]
+    ok, val = _get(key, PROFILE_TTL)
+    if ok:
+        return val
     out = {}
     try:
         import yfinance as yf
@@ -62,8 +102,7 @@ def profile(symbol: str) -> dict:
                 break
     except Exception:
         out = {}
-    _cache[key] = out
-    return out
+    return _put(key, out)
 
 
 def analyst_snapshot(recommendations, targets) -> dict | None:
@@ -110,8 +149,9 @@ def financials(symbol: str) -> dict | None:
     often blocked, so fundamentals.py computes the ratios itself from these statements."""
     ys = yf_symbol(symbol)
     key = ("fin", ys)
-    if key in _cache:
-        return _cache[key]
+    ok, val = _get(key, FIN_TTL)
+    if ok:
+        return val
 
     def get(fn):
         try:
@@ -141,8 +181,7 @@ def financials(symbol: str) -> dict | None:
                    **profile(symbol)}
     except Exception:
         out = None
-    _cache[key] = out
-    return out
+    return _put(key, out)
 
 
 def search(query: str, limit: int = 8) -> list[tuple[str, str]]:

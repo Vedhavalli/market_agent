@@ -33,11 +33,18 @@ def find(query: str):
     return data.search(query)
 
 
+class NoData(Exception):
+    pass
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def run_analysis(symbol: str, code_version: float):
-    """`code_version` makes cached results expire when any module changes (st.cache_data only hashes this function)."""
-    data._cache.clear()  # fresh data on each (cache-expired) run
-    return swing.detail(cfg, symbol)
+    """`code_version` makes cached results expire when any module changes (st.cache_data only hashes this function).
+    Raises NoData instead of returning None so a temporary Yahoo failure is not cached for 15 minutes."""
+    res = swing.detail(cfg, symbol)  # data.py reuses recent prices / statements (e.g. from the screener)
+    if not res:
+        raise NoData(data.last_error.get(data.yf_symbol(symbol), "not enough price history"))
+    return res
 
 
 def section_df(sec: rpt.Section) -> pd.DataFrame:
@@ -73,11 +80,17 @@ if not choice:
     st.stop()
 
 symbol, name = choice.split("|", 1)
+version = max(p.stat().st_mtime for p in Path(__file__).parent.glob("*.py"))
+if st.button("🔄 Fetch latest data", help="Re-download this stock's prices and statements from Yahoo now."):
+    data.clear(symbol=symbol)
+    run_analysis.clear(symbol, version)
 with st.spinner(f"Analysing {name}..."):
-    res = run_analysis(symbol, max(p.stat().st_mtime for p in Path(__file__).parent.glob("*.py")))
-if not res:
-    st.error(f"No data for **{symbol}**. Check the name, or try the exact NSE symbol.")
-    st.stop()
+    try:
+        res = run_analysis(symbol, version)
+    except NoData as e:
+        st.error(f"No data for **{symbol}** ({e}). Yahoo Finance may be rate-limiting the server - "
+                 "wait a minute and try again, or check the NSE symbol.")
+        st.stop()
 rep, r, df = res
 sym = symbol.split(".")[0]
 L, side = r["L"], r["side"]
