@@ -21,6 +21,12 @@ data/
 # Generated reports
 reports/
 
+# Packaged application output
+build/
+dist/
+dist_value/
+dist_value2/
+
 # Editors / OS
 .vscode/
 .idea/

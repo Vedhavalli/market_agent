@@ -60,7 +60,7 @@ def suggestions(term: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------- page
 st.title("📈 Indian Share Tips")
 st.caption("Start typing a company name or NSE symbol (3+ letters, e.g. *rel*, *tat*, *inf*) and pick a suggestion. "
-           "Technical analysis is recomputed from fresh daily data each time.")
+           "Business quality and valuation lead longer-horizon decisions; weekly prices help time entries.")
 
 picked = st_searchbox(suggestions, placeholder="Type 3+ letters of the company name...", label="Share name",
                       key="share_search", debounce=200)
@@ -87,7 +87,7 @@ st.subheader(f"{name} ({symbol}) - {r['date']}")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Last close", f"Rs {num(r['last'])}", f"{r['chg_pct']:+.2f}%")
 c2.metric("Swing signal", side or "NO TRADE")
-c3.metric("Score", f"{r['bull']}/9 bull · {r['bear']}/9 bear")
+c3.metric("Swing technical score", f"{r['bull']}/9 bull · {r['bear']}/9 bear")
 c4.metric("Market (Nifty)", r["regime"])
 
 def banner(color: str, bg: str, title: str, lines: list[str]) -> None:
@@ -191,20 +191,20 @@ def horizon_banner(h: dict) -> None:
     if h["when"]:
         steps.append(f"⏱️ {b('When: ' + html.escape(h['when']), AMBER)}")
     if v == "BUY":
-        banner(GREEN, "#e8f7ee", f"✅ GOOD TO BUY for {per}: {safe_name}", [
+        banner(GREEN, "#e8f7ee", f"✅ WEEKLY TIMING: ENTRY CONDITIONS FAVORABLE ({per})", [
             f"Buy around {b('Rs ' + num(p['entry']), GREEN)} · Confidence {b(h['confidence'], GREEN)}",
         ] + plan_lines + tail)
     elif v == "BUY ON DIP":
-        banner(AMBER, "#fff6e0", f"🟡 GOOD STOCK, BUY ON DIP for {per}: {safe_name}", [
+        banner(AMBER, "#fff6e0", f"🟡 WEEKLY TIMING: PRICE EXTENDED ({per})", [
             b("Why not right now: " + html.escape(h["why"]), AMBER),
         ] + steps + [f"If bought at {b('Rs ' + num(p['entry']), AMBER)} · Confidence {b(h['confidence'], AMBER)}"]
             + plan_lines + tail)
     elif v == "WAIT":
-        banner(AMBER, "#fff6e0", f"⏳ NOT A {h['adj'].upper()} BUY YET: WAIT ({safe_name})", [
+        banner(AMBER, "#fff6e0", f"⏳ WEEKLY TIMING: WAIT FOR TREND CONFIRMATION ({per})", [
             b("Why not now: " + html.escape(h["why"]), AMBER)] + steps
             + ["No hold period or profit target until the setup turns bullish."] + tail)
     else:
-        banner(RED, "#fdecea", f"❌ NOT GOOD TO BUY FOR {per.upper()}: AVOID {safe_name}", [
+        banner(RED, "#fdecea", f"❌ WEEKLY TIMING: LONGER-TERM TREND IS WEAK ({per})", [
             b("Why not: " + html.escape(h["why"]), RED)] + steps + tail)
 
 
@@ -225,6 +225,7 @@ if stg and style in stg["styles"]:
     st.caption("Chart view for this holding period:")
 
 if style != "swing":
+    st.caption("Supporting weekly timing checks; the investment verdict above is driven mainly by business quality and valuation.")
     horizon_banner(hz[style])
 elif side == "BUY":
     p = r["plan"]

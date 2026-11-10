@@ -622,21 +622,28 @@ def holistic(cfg: dict, symbol: str, r: dict, idx_df: pd.DataFrame | None):
 
 def holistic_sections(sym: str, fund: dict | None, mac: dict | None, stg: dict) -> tuple[list, list]:
     """(summary sections shown near the top, detail sections)."""
-    rows = [[d["label"] + f" ({d['period']})", d["technical"], d["final"] + (" (starter)" if d["starter"] else ""),
-             f"{d['size_pct']:g}%" if d["size_pct"] else DASH, f"{d['parts']} parts" if d["parts"] > 1 else "one go"
-             if d["size_pct"] else DASH, " ".join(d["why"])] for d in stg["styles"].values()]
+    rows = [[d["label"] + f" ({d['period']})", d["technical"], d.get("investment_call", d["final"]),
+             d["final"] + (" (starter)" if d["starter"] else ""), f"{d['size_pct']:g}%" if d["size_pct"] else DASH,
+             f"{d['parts']} parts" if d["parts"] > 1 else "one go" if d["size_pct"] else DASH,
+             " ".join(d["why"])] for d in stg["styles"].values()]
     head = [rpt.Section(
-        "Final verdict: chart + business + macro", ["Style", "Chart says", "Final call", "Size (% of capital)",
-                                                    "Buy in", "Why"], rows, align="llllll",
+        "Final verdict: value + quality + timing", ["Style", "Chart timing", "Investor view", "Final call",
+                                                    "Size (% of capital)", "Buy in", "Why"], rows, align="lllllll",
         note=(fund["summary"] if fund else "Fundamentals unavailable.") + " " + (mac["summary"] if mac else
               "Macro data unavailable.") + " Size = share of your total trading / investing capital.")]
     det = []
     if fund:
         g = f"grade {fund['grade']} ({fund['score']}/100)" if fund["grade"] else "not graded (limited data)"
+        assumptions = fund["value_assumptions"]
+        model_note = (f"Sector profile: {assumptions['sector_group']}; fair P/E {num(fund['fair_pe'], 1)}x. "
+                      + (f"DCF assumes {assumptions['DCF WACC']:.0%} discount rate and "
+                         f"{assumptions['terminal growth']:.0f}% terminal growth. "
+                         if assumptions["DCF WACC"] else "DCF is not applied to lenders. ")
+                      + "Intrinsic values are approximate estimates, not guaranteed targets.")
         det.append(rpt.Section(f"Business & fundamentals: {g}, valuation {fund['valuation'].lower()}",
                                ["Area", "Check", "Reading", "Status"], fund["checks"], align="llll",
                                note="From Yahoo Finance annual / quarterly statements (consolidated where available). "
-                                    "Management quality, competition and news are not assessed."))
+                                                "Management quality, competition and news are not assessed. " + model_note))
         det.append(rpt.Section("Key numbers", ["Metric", "Value"], fund["metrics"], align="lr"))
         if fund["history"]:
             det.append(rpt.Section("Financial history (Rs crore)", ["Year", "Sales", "Net profit", "Net margin",

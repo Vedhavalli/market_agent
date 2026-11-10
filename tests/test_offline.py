@@ -165,13 +165,36 @@ def main():
     fs = fundamentals.analyze(strong, 400.0)
     assert fs["grade"] in ("A", "B") and fs["valuation"] in ("Attractive", "Fair"), (fs["score"], fs["checks"])
     assert 14 < fs["pe"] < 18 and not fs["lender"] and fs["history"], fs["pe"]
+    assert fs["value_methods"]["Graham number"] > 0 and fs["value_methods"]["Earnings power"] > 0
+    assert fs["value_methods"]["Discounted cash flow"] > 0 and fs["fcf_net"] == 0.8
+    assert fs["margin_of_safety_pct"] < 0 and fs["value_rating"] == "Fairly valued"
+    assert fs["value_model_count"] == 3 and fs["data_status"] == "Current"
+    one_model = fundamentals._intrinsic_values(100, 10, 0, 100, 0, 0, 8, np.nan, 15,
+                                               fundamentals._sector_assumptions("Technology", "Software", False),
+                                               False)
+    assert one_model["model_count"] == 1 and np.isnan(one_model["intrinsic_value"])
     fw = fundamentals.analyze(weak, 100.0)
     assert fw["grade"] == "D" and fw["valuation"] == "Loss-making" and fw["flags"], (fw["score"], fw["checks"])
     fb = fundamentals.analyze(bank, 400.0)
     assert fb["lender"] and any("Return on assets" in c[1] for c in fb["checks"])
     assert not any("Debt to equity" in c[1] for c in fb["checks"])
+    assert fb["value_methods"]["Book value"] > 0 and fb["value_methods"]["Discounted cash flow"] is None
+    stale_raw = dict(strong)
+    for key in ("income", "balance", "cash"):
+        stale_raw[key] = strong[key].copy()
+        stale_raw[key].columns = pd.to_datetime(stale_raw[key].columns) - pd.DateOffset(years=2)
+    stale_fund = fundamentals.analyze(stale_raw, 200.0)
+    assert stale_fund["data_status"] == "Stale"
     assert fundamentals.analyze(None, 100.0) is None and "not available" in fundamentals.text(None, "X")
     assert "Business & fundamentals" in fundamentals.text(fs, "X")
+    assert "not independently verified" in fundamentals.text(fs, "X")
+
+    recs = pd.DataFrame([{"period": "0m", "strongBuy": 4, "buy": 8, "hold": 2, "sell": 1,
+                          "strongSell": 0}])
+    analyst_view = data.analyst_snapshot(recs, {"current": 100, "mean": 120, "median": 118,
+                                                "low": 90, "high": 140})
+    assert analyst_view["consensus"] == "Buy consensus" and analyst_view["total"] == 15
+    assert analyst_view["target_mean"] == 120 and data.analyst_snapshot(None, None) is None
 
     # macro: bull market + calm VIX -> risk-on; bear market + high VIX -> risk-off
     t2 = np.arange(900)
@@ -188,15 +211,29 @@ def main():
     # strategy: weak business vetoes long-term buys; risk-off halves size; good business at fair price -> starter
     d = strategy.decide("longterm", "BUY", 10.0, "High", fw, m_on)
     assert d["final"] == "AVOID" and d["size_pct"] == 0, d
-    on = strategy.decide("longterm", "BUY", 10.0, "High", fs, m_on)
-    off = strategy.decide("longterm", "BUY", 10.0, "High", fs, m_off)
+    cheap_fs = fundamentals.analyze(strong, 200.0)
+    on = strategy.decide("longterm", "BUY", 10.0, "High", cheap_fs, m_on)
+    off = strategy.decide("longterm", "BUY", 10.0, "High", cheap_fs, m_off)
     assert on["final"] == "BUY" and on["size_pct"] > 0 and abs(off["size_pct"] - on["size_pct"] / 2) < 0.11, (on, off)
+    assert on["investment_call"] == "BUY" and on["margin_of_safety_pct"] >= 25
+    bearish_view = data.analyst_snapshot(
+        pd.DataFrame([{"period": "0m", "strongBuy": 0, "buy": 0, "hold": 0, "sell": 2, "strongSell": 4}]),
+        {"current": 200, "mean": 150, "median": 148, "low": 120, "high": 180})
+    challenged = {**cheap_fs, "analyst": bearish_view}
+    analyst_veto = strategy.decide("longterm", "BUY", 10.0, "High", challenged, m_on)
+    assert analyst_veto["final"] == "WATCHLIST" and analyst_veto["size_pct"] == 0
+    stale_call = strategy.decide("longterm", "BUY", 10.0, "High", stale_fund, m_on)
+    assert stale_call["final"] == "WATCHLIST" and stale_call["size_pct"] == 0
     assert off["parts"] == 3
-    st_ = strategy.decide("longterm", "WAIT", 10.0, "Medium", fs, m_on)
-    assert st_["starter"] and 0 < st_["size_pct"] < on["size_pct"], st_
-    assert strategy.decide("positional", "BUY", 8.0, "High", fw, m_on)["final"] == "WAIT"
+    st_ = strategy.decide("longterm", "WAIT", 10.0, "Medium", cheap_fs, m_on)
+    assert st_["final"] == "WATCHLIST" and st_["size_pct"] == 0 and not st_["starter"], st_
+    assert strategy.decide("longterm", "BUY", 10.0, "High", fs, m_on)["final"] == "WATCHLIST"
+    held = strategy.decide("longterm", "WAIT", 10.0, "Medium", cheap_fs, m_on, held=True)
+    assert held["final"] == "HOLD" and held["investment_call"] == "HOLD"
+    assert advice._stance({"longterm": held}, cheap_fs)[0] == "HOLD"
+    assert strategy.decide("positional", "BUY", 8.0, "High", fw, m_on)["final"] == "AVOID"
     assert strategy.decide("swing", "WAIT", None, None, fs, m_on)["size_pct"] == 0
-    assert strategy.decide("longterm", "BUY", 10.0, "High", fs, m_on, room=2.0)["size_pct"] == 2.0
+    assert strategy.decide("longterm", "BUY", 10.0, "High", cheap_fs, m_on, room=2.0)["size_pct"] == 2.0
 
     # full detail report includes business, macro and portfolio-strategy sections
     data.financials = lambda s: strong
@@ -270,12 +307,12 @@ def main():
     rows = [srow("A", 90, "Fair", 9, "BUY"), srow("B", 50, "Expensive", 9, "BUY"), srow("C", 80, "Fair", 8, "BUY"),
             srow("D", 95, "Attractive", 9, "WAIT"), srow("E", 85, "Fair", 7, "BUY", "Bank"),
             srow("F", 30, "Loss-making", 2, "AVOID", "Bank", 0.0)]
-    assert screener.score(rows[0], "longterm") == 82.5
+    assert screener.score(rows[0], "longterm") == 78.8
     rk = screener.rank(rows, "longterm", n=10, max_per_sector=2)
-    assert [x["sym"] for x in rk["buy"]] == ["A", "C", "E"] and [x["rank"] for x in rk["buy"]] == [1, 2, 3]
+    assert [x["sym"] for x in rk["buy"]] == ["A", "E", "C"] and [x["rank"] for x in rk["buy"]] == [1, 2, 3]
     assert [x["sym"] for x in rk["watch"]] == ["D", "B"]  # WAIT and sector-capped; AVOID never listed
-    assert [x["sym"] for x in screener.rank(rows, "longterm", n=10)["buy"]] == ["A", "C", "E", "B"]
-    assert [x["sym"] for x in screener.rank(rows, "longterm", n=2)["buy"]] == ["A", "C"]
+    assert [x["sym"] for x in screener.rank(rows, "longterm", n=10)["buy"]] == ["A", "E", "C", "B"]
+    assert [x["sym"] for x in screener.rank(rows, "longterm", n=2)["buy"]] == ["A", "E"]
     assert rk["all"][0]["sym"] == "D" and screener.rank(rows, "swing")["all"] == []  # no swing data in these rows
     assert all(len(t) == len(screener.COLUMNS) for t in screener.table(rk["buy"] + rk["watch"], "longterm"))
 

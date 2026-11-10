@@ -22,7 +22,8 @@ AREAS = {
 VALUATION = {"Attractive": "Attractively priced", "Fair": "Fairly priced", "Expensive": "Expensive",
              "Loss-making": "No profit to value", "Unknown": "Could not be valued"}
 STANCE_KIND = {"INVEST": "buy", "BUY FOR 3-6 MONTHS": "buy", "START SMALL, ADD LATER": "wait",
-               "BUY ON DIPS": "wait", "SHORT-TERM TRADE ONLY": "wait", "WAIT (WATCHLIST)": "wait", "AVOID": "avoid"}
+               "BUY ON DIPS": "wait", "SHORT-TERM TRADE ONLY": "wait", "WAIT (WATCHLIST)": "wait",
+               "HOLD": "wait", "AVOID": "avoid"}
 
 
 def _nan(x) -> bool:
@@ -76,6 +77,25 @@ def factors(r: dict) -> list[list[str]]:
         pe = f" (P/E {f['pe']:.0f})" if not _nan(f["pe"]) else ""
         rows.append(["Valuation", f["valuation"] + pe, {"Attractive": "Positive", "Fair": "Neutral"}.get(
             f["valuation"], "Neutral" if f["valuation"] == "Unknown" else "Negative")])
+        if not _nan(f.get("intrinsic_value")):
+            mos = f.get("margin_of_safety_pct")
+            rows.append(["Estimated value", f"Rs {num(f['intrinsic_value'])}; margin of safety {num(mos, 1)}%",
+                         "Positive" if mos is not None and mos >= 25 else
+                         "Negative" if mos is not None and mos < 0 else "Neutral"])
+        rows.append(["Statement data", f"{f.get('data_status', 'Unknown')}"
+                     + (f"; as of {f['statement_as_of']:%d %b %Y}" if f.get("statement_as_of") is not None else "")
+                     + "; Yahoo Finance only, not independently reconciled",
+                     "Neutral" if f.get("data_status") == "Current" else "Negative"])
+        analyst = f.get("analyst")
+        if analyst:
+            target = analyst.get("target_mean")
+            target_return = ((target / f["price"] - 1) * 100 if target and f.get("price") else None)
+            rows.append(["Analyst consensus", f"{analyst['consensus']} ({analyst['total']} ratings)"
+                         + (f"; mean target {target_return:+.1f}%" if target_return is not None else ""),
+                         "Positive" if analyst["consensus"] == "Buy consensus" else
+                         "Negative" if analyst["consensus"] == "Sell consensus" else "Neutral"])
+        else:
+            rows.append(["Analyst consensus", "Not available from Yahoo; no recommendation was inferred", "Neutral"])
         q = f["q_ni_yoy"]
         if not _nan(q):
             rows.append(["Latest profit trend", f"{q:+.0f}% vs a year ago",
@@ -124,6 +144,16 @@ def action(r: dict, style: str, d: dict) -> str:
         return s + "."
     if final in BUYISH:
         return "Good setup, but your portfolio has no room for more of this stock / sector: do not add."
+    if d.get("investment_call") == "HOLD":
+        return ("Hold only while business quality and quarterly results remain intact. "
+                f"Current margin of safety is {num(d['margin_of_safety_pct'], 1)}%.")
+    if final == "WATCHLIST":
+        level = d.get("value_entry")
+        price = f" Watch for about Rs {num(level)} or lower to reach the required margin of safety." if level else ""
+        timing = f" The weekly timing check is {d['technical'].lower()}."
+        wait = f" Typical timing estimate: {when}." if when else ""
+        next_step = f" Next: {steps[0]}" if steps else ""
+        return "Do not buy yet; keep it on the watchlist." + price + timing + next_step + wait
     if final == "WAIT":
         reason = d["why"][0] if d["technical"] in BUYISH else why
         return ("Do not buy yet. " + reason.rstrip(".") + "." + (f" Next: {steps[0]}" if steps else "")
@@ -144,6 +174,8 @@ def _stance(styles: dict, f: dict | None) -> tuple[str, str | None]:
         return "BUY FOR 3-6 MONTHS", "positional"
     if sw and sw["size_pct"] and sw["final"] == "BUY":
         return "SHORT-TERM TRADE ONLY", "swing"
+    if lt and lt.get("investment_call") == "HOLD":
+        return "HOLD", None
     weak = f is not None and (f["grade"] == "D" or f["valuation"] == "Loss-making")
     if (lt and lt["final"] == "AVOID") or weak:
         return "AVOID", None
@@ -167,9 +199,14 @@ def _headline(r: dict, stance: str, best: str | None, styles: dict) -> str:
         "BUY FOR 3-6 MONTHS": "Suits a 3-6 month position; not yet a 1-2 year investment.",
         "SHORT-TERM TRADE ONLY": "Only a short swing trade with a strict stop-loss; not an investment now.",
         "WAIT (WATCHLIST)": "Not a buy for any holding period today: keep it on your watchlist.",
+        "HOLD": "Already holding: stay invested only while business quality and results remain sound.",
         "AVOID": "Not suitable to buy now.",
     }[stance]
     out = f"{biz}; {ctx}. {what}"
+    if f and not _nan(f.get("intrinsic_value")):
+        mos = f.get("margin_of_safety_pct")
+        out += (f" Estimated intrinsic value Rs {num(f['intrinsic_value'])}; margin of safety "
+                f"{num(mos, 1)}%. Model estimates are approximate, not price targets.")
     if best:
         out += f" {styles[best]['how']}"
     return out
@@ -191,6 +228,10 @@ def watch(r: dict, stance: str, best: str | None) -> list[str]:
         elif r["outlook"]["steps"]:
             out.append(r["outlook"]["steps"][0])
     if f:
+        if not _nan(f.get("intrinsic_value")):
+            required = 25
+            out.append(f"Long-term entry watch: around Rs {num(f['intrinsic_value'] * (1 - required / 100))} "
+                       "or lower for a 25% margin of safety, with weekly trend stabilization.")
         out.append("Re-check after each quarterly result: a profit fall of more than 25% from a year ago, rising debt "
                    "or falling margins would weaken the case.")
         if f["valuation"] == "Expensive":
