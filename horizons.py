@@ -3,10 +3,9 @@
 Swing trading (swing.py) looks for one move over days to a few weeks. Longer holds need slower evidence, so each
 style uses its own timeframe:
 
-  * Positional (3-6 months): the WEEKLY chart - 10/30-week EMAs and slope, weekly MACD and RSI, 6-month strength
-    vs Nifty, distance from the 52-week high. 7 conditions.
-  * Long-term (1-2 years): the primary trend - 40-week EMA (~200-DMA) and its slope, 50/200-DMA golden cross,
-    12-month return and strength vs Nifty, position in the 52-week range, higher yearly lows. 8 conditions.
+    * Positional (3-6 months): two weekly timing checks (close above the 10-week EMA; 30-week EMA rising).
+    * Long-term (1-2 years): two weekly timing checks (close above the 40-week EMA; 40-week EMA rising).
+        Other chart conditions remain visible as context, but do not decide whether the business is investable.
 
 Verdict: BUY (setup on, price not stretched), BUY ON DIP (setup on but stretched above the weekly average),
 WAIT (mixed), AVOID (more bearish than bullish). Targets come from what this stock actually did after the same
@@ -25,11 +24,14 @@ from util import num, pct
 
 STYLES = {
     "positional": {"label": "Positional", "period": "3-6 months", "adj": "3-6 month", "windows": (63, 126),
-                   "names": ("3 months", "6 months"), "min_score": 6, "total": 7, "rr": (2.0, 3.5),
+                                     "names": ("3 months", "6 months"), "total": 7, "rr": (2.0, 3.5),
+                                     "timing_conditions": ("Weekly close above 10-week EMA", "30-week EMA rising (vs 4 weeks ago)"),
                    "stretch_atr": 2.0, "review": "every Friday (weekly close)", "avg": "10-week EMA",
                    "exit_avg": "30-week EMA"},
     "longterm": {"label": "Long-term", "period": "1-2 years", "adj": "1-2 year", "windows": (252, 504),
-                 "names": ("1 year", "2 years"), "min_score": 7, "total": 8, "rr": (1.5, 3.0),
+                                 "names": ("1 year", "2 years"), "total": 8, "rr": (1.5, 3.0),
+                                 "timing_conditions": ("Weekly close above 40-week EMA (~200-DMA)",
+                                                                             "40-week EMA rising (vs 13 weeks ago)"),
                  "stretch_atr": 5.0, "review": "once a month", "avg": "40-week EMA", "exit_avg": "40-week EMA"},
 }
 NOTE = ("Targets = the typical highest price this stock reached within 3/6 months (positional) or 1/2 years "
@@ -184,16 +186,23 @@ def analyze(df: pd.DataFrame, key: str, idx_close: pd.Series | None = None) -> d
     ref = "e10" if key == "positional" else "e40"
     limit = x[ref] + st["stretch_atr"] * x["watr"]
     stretched = x["close"] > limit
-    setup = ((bull >= st["min_score"]) & ~stretched & (x["watr"] > 0)).to_numpy()
-    good = (bull >= st["min_score"]).to_numpy()
+    timing = pd.Series(True, index=x.index)
+    timing_bear = pd.Series(True, index=x.index)
+    for label in st["timing_conditions"]:
+        bullish, bearish, _ = cond[label]
+        timing &= bullish
+        timing_bear &= bearish
+    setup = (timing & ~stretched & (x["watr"] > 0)).to_numpy()
+    good = timing.to_numpy()
 
     L, c = x.iloc[-1], x["close"].to_numpy(dtype=float)
     last, date, watr = float(c[-1]), x.index[-1].date(), float(L["watr"])
     nb, nr, tot = int(bull.iloc[-1]), int(bear.iloc[-1]), st["total"]
-    verdict = ("BUY" if setup[-1] else "BUY ON DIP" if good[-1] else "AVOID" if nr > nb else "WAIT")
+    verdict = ("BUY" if setup[-1] else "BUY ON DIP" if good[-1] else "AVOID" if timing_bear.iloc[-1] else "WAIT")
     stats = [_forward(c, df["High"].to_numpy(dtype=float), setup, w) for w in st["windows"]]
     h = {
-        "key": key, **{k: st[k] for k in ("label", "period", "adj", "names", "review", "total", "min_score")},
+        "key": key, **{k: st[k] for k in ("label", "period", "adj", "names", "review", "total")},
+        "timing_conditions": st["timing_conditions"],
         "verdict": verdict, "bull": nb, "bear": nr, "date": date, "last": last, "stats": stats,
         "conditions": [(k, "Bullish" if b.iloc[-1] else "Bearish" if r.iloc[-1] else "Neutral", rd)
                        for k, (b, r, rd) in cond.items()],
@@ -221,13 +230,14 @@ def analyze(df: pd.DataFrame, key: str, idx_close: pd.Series | None = None) -> d
                      "source": "history" if m1 and m1 > 0 else "rule"}
         s1 = stats[0]
         h["confidence"] = ("Low" if not s1 or s1["win"] < 50 or s1["median"] <= 0 or t1 - entry < 0.75 * risk else
-                           "High" if s1["win"] >= 65 and nb == tot and t1 - entry >= 1.5 * risk
+                           "High" if s1["win"] >= 65 and good[-1] and t1 - entry >= 1.5 * risk
                            else "Medium")
 
     # why / what to wait for / when
     avg_lv = float(L[ref])
     if verdict == "BUY":
-        h["why"] = f"{nb}/{tot} {st['adj']} conditions are bullish and the price is not stretched."
+        h["why"] = (f"Both key weekly timing checks are positive: price is above the {st['avg']} and that average is "
+                    "rising; the price is not stretched. Business quality and value determine the final call.")
     elif verdict == "BUY ON DIP":
         lv = float(limit.iloc[-1])
         h["why"] = (f"Strong {st['adj']} trend ({nb}/{tot}) but the price is "
@@ -238,9 +248,12 @@ def analyze(df: pd.DataFrame, key: str, idx_close: pd.Series | None = None) -> d
                      "after a few sideways weeks.")
     else:
         if verdict == "AVOID":
-            h["why"] = f"{nr}/{tot} conditions are bearish: the {st['adj']} trend is down. Avoid fresh buying."
+            h["why"] = (f"Both key weekly timing checks are bearish: price is below the {st['avg']} and that average "
+                        "is falling. Avoid a fresh entry until the long trend stabilizes.")
         else:
-            h["why"] = f"Only {nb}/{tot} conditions are bullish (need {st['min_score']}): the {st['adj']} trend is not clear."
+            h["why"] = (f"Weekly timing is not confirmed: "
+                        + "; ".join(label for label in st["timing_conditions"]
+                                    if not cond[label][0].iloc[-1]) + ".")
         lv_need = {
             "Weekly close above 10-week EMA": (float(L["e10"]), f"a weekly close above the 10-week EMA Rs {num(L['e10'])} ({pc(L['e10'])})"),
             "Weekly close above 40-week EMA (~200-DMA)": (float(L["e40"]), f"a weekly close above the 40-week EMA Rs {num(L['e40'])} ({pc(L['e40'])})"),
@@ -260,25 +273,21 @@ def analyze(df: pd.DataFrame, key: str, idx_close: pd.Series | None = None) -> d
             "At least 30% above 52-week low": f"price at least 30% above the 52-week low (Rs {num(1.3 * L['lo252'])})",
             "Higher 52-week low than last year": "a higher yearly low (no new lows below last year's)",
         }
-        miss = [k for k, s, _ in h["conditions"] if s != "Bullish"]
+        miss = [k for k in st["timing_conditions"] if not cond[k][0].iloc[-1]]
         items = [lv_need[k][1] if k in lv_need else other[k] for k in miss]
-        need = max(st["min_score"] - nb, 0)
-        if need:
-            h["steps"].append(f"To become a {st['adj']} BUY it needs {need} more of: " + "; ".join(items) + ".")
+        if items:
+            h["steps"].append("Wait for " + " and ".join(items) + ".")
         key_lv = min((lv_need[k][0] for k in miss if k in lv_need and lv_need[k][0] > last), default=None)
-        tw = _typical_wait(bull.to_numpy(), setup)
+        tw = _typical_wait(timing.astype(int).to_numpy(), setup)
         parts = []
         if key_lv:
             parts.append(f"Next price level to watch: Rs {num(key_lv)} ({pc(key_lv)}), {_weeks(key_lv - last, watr)} "
                          "away at a normal pace.")
         if tw:
-            parts.append(f"From a similar state ({nb}/{tot} bullish) this stock took a median {_span(tw[0])} to turn "
-                         f"into a {st['adj']} BUY setup (it happened in {tw[1]:.0f}% of past cases).")
-        elif need >= 3:
-            parts.append("Slow conditions (average crossovers, yearly returns) are missing, so a full setup usually "
-                         "needs a few months to rebuild.")
+            parts.append(f"From a similar weekly timing state this stock took a median {_span(tw[0])} to confirm "
+                         f"(it happened in {tw[1]:.0f}% of past cases).")
         else:
-            parts.append("The slower conditions usually need several weeks to catch up if the price holds.")
+            parts.append("These weekly averages usually need several weeks to confirm if price holds above support.")
         h["when"] = " ".join(parts) + " Re-check weekly."
 
     exit_col = "e30" if key == "positional" else "e40"

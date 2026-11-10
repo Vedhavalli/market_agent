@@ -25,15 +25,17 @@ UNIVERSES = ["Nifty 50", "Nifty Next 50", "Nifty 100", "Nifty Midcap 50", "Nifty
 STYLES = {"swing": "Swing (days to weeks)", "positional": "Positional (3-6 months)",
           "longterm": "Long-term (1-2 years)"}
 WEIGHTS = {
-    "swing": {"Business": 10, "Valuation": 5, "Trend": 45, "Results": 10, "Macro": 10, "Final call": 20},
-    "positional": {"Business": 20, "Valuation": 10, "Trend": 35, "Results": 10, "Macro": 10, "Final call": 15},
-    "longterm": {"Business": 35, "Valuation": 20, "Trend": 20, "Results": 10, "Macro": 5, "Final call": 10},
+    "swing": {"Business": 10, "Valuation": 5, "Timing": 45, "Results": 10, "Macro": 10, "Final call": 20},
+    "positional": {"Business": 30, "Valuation": 25, "Timing": 15, "Results": 10, "Macro": 5, "Final call": 15},
+    "longterm": {"Business": 35, "Valuation": 35, "Timing": 5, "Results": 10, "Macro": 5, "Final call": 10},
 }
 VAL_PTS = {"Attractive": 100, "Fair": 65, "Expensive": 25, "Loss-making": 0}
 TILT_PTS = {"Tailwind": 100, "Neutral": 50, "Headwind": 0}
-CALL_PTS = {"BUY": 100, "BUY ON DIP": 75, "WAIT": 25}
-COLUMNS = ["Rank", "Stock", "Company", "Sector", "Score", "Final call", "Size", "Buy at", "Target 1",
-           "Stop-loss", "Business", "Valuation", "Trend", "Why"]
+CALL_PTS = {"BUY": 100, "BUY ON DIP": 75, "HOLD": 55, "WAIT": 25, "WATCHLIST": 35}
+COLUMNS = ["Rank", "Stock", "Company", "Sector", "Score", "Value rating", "Investor view", "Final call", "MOS", "Intrinsic value",
+           "Value models",
+           "Value entry", "Size", "Buy at", "Target 1", "Stop-loss", "Business", "ROE", "ROCE / ROA", "PEG",
+           "P/B", "D/E", "FCF / NI", "Data status", "Analyst view", "Valuation", "Timing", "Key risks", "Why"]
 
 
 def _nan(x) -> bool:
@@ -62,7 +64,9 @@ def summarize(sym: str, name: str, r: dict) -> dict:
             if not h:
                 continue
             bull, total, p = h["bull"], h["total"], h["plan"]
-        styles[k] = {"technical": d["technical"], "final": d["final"], "starter": d["starter"],
+        styles[k] = {"technical": d["technical"], "final": d["final"],
+                 "investment_call": d.get("investment_call", "WATCHLIST"),
+                 "value_entry": d.get("value_entry"), "starter": d["starter"],
                      "size": d["size_pct"], "parts": d["parts"], "why": d["why"], "bull": bull, "total": total,
                      "entry": p["entry"] if p else None, "stop": p["stop"] if p else None,
                      "t1": p["t1"] if p else None, "t1_pct": p["t1_pct"] if p else None,
@@ -72,6 +76,13 @@ def summarize(sym: str, name: str, r: dict) -> dict:
             "price": r["last"], "chg": r["chg_pct"], "date": r["date"], "fscore": f.get("score"),
             "grade": f.get("grade"), "grade_word": f.get("grade_word"), "valuation": f.get("valuation") or "Unknown",
             "pe": f.get("pe"), "roe": f.get("roe"), "rev_cagr": f.get("rev_cagr"), "q_ni_yoy": f.get("q_ni_yoy"),
+            "intrinsic_value": f.get("intrinsic_value"), "upside_pct": f.get("upside_pct"),
+            "margin_of_safety_pct": f.get("margin_of_safety_pct"), "value_rating": f.get("value_rating", "Unknown"),
+            "value_model_count": f.get("value_model_count", 0),
+            "fcf_net": f.get("fcf_net"), "peg": f.get("peg"), "pb": f.get("pb"), "de": f.get("de"),
+            "roce": f.get("roce"), "roa": f.get("roa"), "lender": f.get("lender", False),
+            "data_status": f.get("data_status", "Unknown"), "statement_as_of": f.get("statement_as_of"),
+            "analyst": f.get("analyst"),
             "strengths": f.get("strengths") or [], "flags": f.get("flags") or [], "tilt": m.get("tilt", "Neutral"),
             "sector_index": m.get("sector"), "trend": r["trend"]["overall"], "stance": adv.get("stance", DASH),
             "headline": adv.get("headline", ""), "styles": styles}
@@ -124,9 +135,12 @@ def parts(row: dict, style: str) -> dict:
     st = row["styles"][style]
     q = row["q_ni_yoy"]
     call = 60 if st["starter"] else CALL_PTS.get(st["final"], 0)
+    mos = row.get("margin_of_safety_pct")
+    valuation = (min(max(60 + float(mos), 0), 100) if mos is not None and not _nan(mos)
+                 else VAL_PTS.get(row["valuation"], 40))
     return {"Business": 40 if row["fscore"] is None else row["fscore"],
-            "Valuation": VAL_PTS.get(row["valuation"], 40),
-            "Trend": st["bull"] / st["total"] * 100 if st["total"] else 0,
+            "Valuation": valuation,
+            "Timing": st["bull"] / st["total"] * 100 if st["total"] else 0,
             "Results": 50 if _nan(q) else min(max(50 + q * 2.5, 0), 100),
             "Macro": TILT_PTS.get(row["tilt"], 50),
             "Final call": call}
@@ -165,11 +179,18 @@ def reasons(x: dict, style: str) -> str:
         out.append(f"{x['grade_word']} business (grade {x['grade']}, {x['fscore']}/100)")
     if x["valuation"] != "Unknown":
         out.append(f"{x['valuation'].lower()} valuation" + (f" (P/E {num(x['pe'], 0)})" if not _nan(x["pe"]) else ""))
-    out.append(f"{st['bull']}/{st['total']} {STYLES[style].split(' (')[0].lower()} trend checks bullish")
+    if not _nan(x.get("margin_of_safety_pct")):
+        out.append(f"{num(x['margin_of_safety_pct'], 1)}% margin of safety vs Rs {num(x['intrinsic_value'])} estimated value")
+    out.append(f"Investor view: {st.get('investment_call', st['final'])}; timing {st['bull']}/{st['total']} bullish")
     if not _nan(x["q_ni_yoy"]):
         out.append(f"latest quarter profit {pct(x['q_ni_yoy'], 0)} YoY")
     if x["tilt"] != "Neutral":
         out.append(f"sector {x['tilt'].lower()}")
+    if x.get("flags"):
+        out.append("risks: " + "; ".join(x["flags"][:2]))
+    analyst = x.get("analyst")
+    if analyst:
+        out.append(f"analysts: {analyst['consensus'].lower()} ({analyst['total']} ratings)")
     return "; ".join(out)
 
 
@@ -185,10 +206,35 @@ def table(entries: list[dict], style: str) -> list[list]:
         entry = st["entry"] if st["entry"] else x["price"]
         buy_at = (num(entry) if st["final"] == "BUY" or st["starter"] else f"dip to {num(entry)}"
                   if st["final"] == "BUY ON DIP" else DASH)
-        out.append([x.get("rank", DASH), x["sym"], x["name"], x["sector"] or DASH, x["score"], call_str(st), sz, buy_at,
+        mos = x.get("margin_of_safety_pct")
+        mos_text = f"{num(mos, 1)}%" if not _nan(mos) else DASH
+        intrinsic = x.get("intrinsic_value")
+        value_text = f"Rs {num(intrinsic)}" if not _nan(intrinsic) else DASH
+        model_count = x.get("value_model_count", 0)
+        model_text = f"{model_count}/3" if model_count else DASH
+        value_entry = st.get("value_entry")
+        value_entry_text = f"Rs {num(value_entry)}" if not _nan(value_entry) else DASH
+        return_text = f"{num(x.get('roe'), 1)}%" if not _nan(x.get("roe")) else DASH
+        operating_return = x.get("roa") if x.get("lender") else x.get("roce")
+        operating_text = f"{num(operating_return, 1)}%" if not _nan(operating_return) else DASH
+        peg_text = num(x.get("peg"), 2) if not _nan(x.get("peg")) else DASH
+        pb_text = num(x.get("pb"), 2) if not _nan(x.get("pb")) else DASH
+        debt_text = num(x.get("de"), 2) if not _nan(x.get("de")) else DASH
+        fcf_ratio = x.get("fcf_net")
+        fcf_text = f"{num(fcf_ratio * 100, 0)}%" if not _nan(fcf_ratio) else DASH
+        data_status = x.get("data_status", "Unknown")
+        if x.get("statement_as_of") is not None:
+            data_status += f" ({x['statement_as_of']:%b %Y})"
+        analyst = x.get("analyst")
+        analyst_text = (f"{analyst['consensus']} ({analyst['total']})" if analyst else "Not available")
+        risk_text = "; ".join(x.get("flags", [])[:2]) or DASH
+        out.append([x.get("rank", DASH), x["sym"], x["name"], x["sector"] or DASH, x["score"],
+                    x.get("value_rating", "Unknown"), st.get("investment_call", st["final"]), call_str(st),
+                    mos_text, value_text, model_text, value_entry_text, sz, buy_at,
                     f"{num(st['t1'])} ({pct(st['t1_pct'], 1)})" if st["t1"] else DASH,
                     f"{num(st['stop'])} (-{st['risk_pct']:.1f}%)" if st["stop"] else DASH,
-                    f"{x['grade']} ({x['fscore']})" if x["grade"] else DASH,
+                f"{x['grade']} ({x['fscore']})" if x["grade"] else DASH, return_text, operating_text,
+                    peg_text, pb_text, debt_text, fcf_text, data_status, analyst_text,
                     x["valuation"] + (f", P/E {num(x['pe'], 0)}" if not _nan(x["pe"]) else ""),
-                    f"{st['bull']}/{st['total']} bullish", reasons(x, style)])
+                f"{st['bull']}/{st['total']} bullish", risk_text, reasons(x, style)])
     return out

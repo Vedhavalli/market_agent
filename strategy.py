@@ -28,49 +28,100 @@ BUYISH = ("BUY", "BUY ON DIP")
 
 
 def decide(style: str, technical: str, risk_pct: float | None, confidence: str | None,
-           fund: dict | None, mac: dict | None, room: float | None = None) -> dict:
+           fund: dict | None, mac: dict | None, room: float | None = None, held: bool = False) -> dict:
     g = fund.get("grade") if fund else None
     val = fund["valuation"] if fund else "Unknown"
     final, why, parts, starter, mult = technical, [], 1, False, 1.0
     buyish = technical in BUYISH
     weak = fund is not None and (g == "D" or val == "Loss-making")
     score = f"{fund['score']}/100" if fund and fund.get("score") is not None else "ungraded"
+    analyst = fund.get("analyst") if fund else None
+    price = fund.get("price") if fund else None
+    analyst_target_down = (analyst is not None and analyst.get("total", 0) >= 5 and
+                           analyst.get("target_mean") is not None and price and
+                           analyst["target_mean"] / price - 1 <= -0.15)
+    analyst_sell_consensus = (analyst is not None and analyst.get("total", 0) >= 5 and
+                              (analyst.get("consensus") == "Sell consensus" or analyst_target_down))
+    mos = fund.get("margin_of_safety_pct") if fund else None
+    mos = float(mos) if mos is not None and np.isfinite(mos) else None
+    required_mos = 25 if style == "longterm" else 20
+    quality = g in ("A", "B")
+    investment_call = "BUY" if style == "swing" and buyish else "WATCHLIST"
+    value_entry = None
+    if fund and fund.get("intrinsic_value") and np.isfinite(fund["intrinsic_value"]):
+        value_entry = round(fund["intrinsic_value"] * (1 - required_mos / 100), 2)
 
-    if style == "longterm":
-        if fund is None or (g is None and not weak):
-            why.append("Fundamental data unavailable: check results, debt and valuation yourself before a long hold.")
+    if style in ("longterm", "positional"):
+        if not fund or g is None:
+            final = "WAIT"
+            why.append("Fundamental statements are unavailable or incomplete: keep this on the watchlist until the "
+                       "business quality and valuation can be checked.")
+        elif fund.get("data_status") != "Current":
+            final = "HOLD" if held else "WATCHLIST"
+            investment_call = "HOLD" if held else "WATCHLIST"
+            why.append("Latest financial statement is stale or its date could not be verified; do not make a new "
+                       "long-horizon entry until a current filing is checked.")
         elif weak:
             final = "AVOID"
-            why.append(f"Weak business ({score}{'; ' + fund['flags'][0] if fund['flags'] else ''}): a 1-2 year hold "
-                       "needs a profitable, growing company, whatever the chart says.")
-        elif buyish:
-            why.append(f"{fund['grade_word']} business ({score}) supports the long-term chart."
-                       if g in ("A", "B") else f"Average business ({score}): keep the position smaller.")
-            if val == "Expensive":
-                parts = 3
-                why.append(f"Valuation is high (P/E {num(fund['pe'], 0)}): buy in 3 parts over 2-3 months.")
-        elif technical == "WAIT" and g in ("A", "B") and val in ("Attractive", "Fair"):
-            starter = True
-            why.append(f"{fund['grade_word']} business ({score}) at a {val.lower()} price: you can start with 1/3 "
-                       "now and add the rest when the chart confirms (weekly close above the 40-week EMA).")
-        elif technical == "AVOID" and g in ("A", "B"):
-            why.append(f"{fund['grade_word']} business ({score}) but the price trend is down: keep it on a watchlist "
-                       "and buy when the long-term trend turns up.")
-        elif fund:
-            why.append(f"Business: {fund['grade_word'] or 'ungraded'} ({score}), valuation {val.lower()}.")
-    elif style == "positional":
-        if buyish and weak:
-            final = "WAIT"
-            why.append(f"The chart is strong but the business is weak ({score}): rallies in weak companies often fade "
-                       "within months.")
-        elif buyish and fund and not np.isnan(fund.get("q_ni_yoy", np.nan)) and fund["q_ni_yoy"] < -25:
-            mult *= 0.5
-            why.append(f"Recent profit fell {abs(fund['q_ni_yoy']):.0f}%: half size, watch the next results.")
-        elif buyish and g in ("A", "B"):
-            why.append(f"Fundamentals back the trend ({fund['grade_word'].lower()}, {score}).")
-        elif fund:
-            why.append(f"Business: {fund['grade_word'] or 'ungraded'} ({score}), valuation {val.lower()}.")
-    else:
+            investment_call = "SELL / AVOID"
+            why.append(f"Weak business ({score}{'; ' + fund['flags'][0] if fund['flags'] else ''}): "
+                       "the long-horizon thesis is not supported by profitability and financial quality.")
+        elif not quality:
+            final = "WATCHLIST"
+            why.append(f"Business quality is below the A/B threshold ({score}); wait for stronger, more durable "
+                       "returns before a multi-month or multi-year investment.")
+        elif mos is None:
+            final = "WATCHLIST"
+            why.append("Intrinsic value cannot be estimated from the available statements; do not treat missing "
+                       "valuation data as a bargain.")
+        elif mos >= required_mos:
+            if technical == "BUY":
+                final = "BUY"
+                investment_call = "BUY"
+                why.append(f"Grade {g} business is at least {required_mos}% below the estimated intrinsic value; "
+                           "the weekly timing check is also positive.")
+            elif technical == "BUY ON DIP":
+                final = "BUY ON DIP"
+                investment_call = "BUY"
+                why.append(f"Grade {g} business clears the {required_mos}% margin-of-safety hurdle; use the chart's "
+                           "buy zone rather than chasing the current price.")
+            else:
+                final = "HOLD" if held else "WATCHLIST"
+                investment_call = "HOLD" if held else "WATCHLIST"
+                why.append(f"Business quality and valuation pass the {required_mos}% margin-of-safety hurdle, but "
+                           f"the chart timing is {technical}; "
+                           + ("hold and wait for trend stabilization." if held else
+                              "wait for trend stabilization before entry."))
+        elif mos >= 0:
+            final = "HOLD" if held else "WAIT"
+            investment_call = "HOLD" if held else "WATCHLIST"
+            why.append(f"Quality is good, but the estimated margin of safety is only {mos:.1f}% (need "
+                       f"{required_mos}%); {('hold and review results' if held else 'wait for a lower entry')}.")
+        else:
+            final = "HOLD" if held else "WATCHLIST"
+            investment_call = "HOLD" if held else "WATCHLIST"
+            why.append(f"Price is above the conservative intrinsic-value estimate ({mos:.1f}% margin of safety); "
+                       f"{('hold only while the business thesis remains intact' if held else 'do not start a position')}.")
+        if fund:
+            method_count = fund.get("value_model_count", 0)
+            why.append(f"Valuation blends {method_count}/3 available sector-appropriate models; statements come "
+                       "from one unverified provider and should be checked against exchange filings. Key risks: "
+                       + ("; ".join(fund.get("flags", [])[:2]) if fund.get("flags") else "no major statement-based flags"))
+            if analyst:
+                target_upside = ((analyst["target_mean"] / price - 1) * 100
+                                 if analyst.get("target_mean") and price else None)
+                if analyst_sell_consensus and final in BUYISH:
+                    final = "HOLD" if held else "WATCHLIST"
+                    investment_call = "HOLD" if held else "WATCHLIST"
+                    why.append(f"Analyst data conflicts with a fresh entry ({analyst['bearish_pct']:.0f}% sell-side "
+                               f"ratings{f', mean target {target_upside:.0f}% vs current price' if target_upside is not None else ''}); "
+                               "wait for updated results or a revised analyst view.")
+                elif analyst.get("total", 0) >= 3:
+                    why.append(f"Analyst cross-check: {analyst['consensus'].lower()} from {analyst['total']} ratings"
+                               + (f", mean target {target_upside:+.0f}% vs current price" if target_upside is not None else "")
+                               + "; analyst targets are not intrinsic value.")
+
+    elif style == "swing":
         if weak:
             why.append(f"Weak company ({score}): keep the stop-loss strict and the size small.")
         else:
@@ -113,8 +164,10 @@ def decide(style: str, technical: str, risk_pct: float | None, confidence: str |
         how = f"Up to {size:g}% of capital" + (f", in {parts} parts" if parts > 1 else "") + "."
     else:
         how = "Do not buy now."
-    return {"style": style, "technical": technical, "final": final, "size_pct": size, "parts": parts,
-            "starter": starter, "why": why, "how": how}
+    return {"style": style, "technical": technical, "final": final, "investment_call": investment_call,
+            "value_entry": value_entry, "margin_of_safety_pct": mos, "size_pct": size, "parts": parts,
+            "starter": starter, "why": why, "how": how, "analyst_consensus": analyst.get("consensus") if analyst else None,
+            "analyst_total": analyst.get("total") if analyst else 0}
 
 
 # ---------------------------------------------------------------- portfolio fit
@@ -190,9 +243,12 @@ def build(specs: list[dict], fund: dict | None, mac: dict | None, sym: str, ctx:
           sector: str = "") -> dict:
     """`specs`: [{"style", "label", "period", "technical", "risk_pct", "confidence", "entry"}]."""
     ft = fit(sym, sector, ctx)
+    held = any(h["symbol"].upper().removesuffix(".NS") == sym.upper().removesuffix(".NS")
+               for h in (ctx or {}).get("holdings", []))
     styles = {}
     for s in specs:
-        d = decide(s["style"], s["technical"], s.get("risk_pct"), s.get("confidence"), fund, mac, ft["room"])
+        d = decide(s["style"], s["technical"], s.get("risk_pct"), s.get("confidence"), fund, mac,
+                   ft["room"], held)
         styles[s["style"]] = {**d, "label": s["label"], "period": s["period"], "entry": s.get("entry")}
     return {"styles": styles, "fit": ft, "guide": guide(mac)}
 

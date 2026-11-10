@@ -66,6 +66,45 @@ def profile(symbol: str) -> dict:
     return out
 
 
+def analyst_snapshot(recommendations, targets) -> dict | None:
+    """Normalize Yahoo's latest recommendation counts and target range; no values are inferred when absent."""
+    if recommendations is None or getattr(recommendations, "empty", True):
+        return None
+    table = recommendations.copy()
+    if "period" in table.columns:
+        current = table[table["period"].astype(str) == "0m"]
+        row = current.iloc[0] if not current.empty else table.iloc[0]
+        period = str(row.get("period", "unknown"))
+    else:
+        row, period = table.iloc[0], "unknown"
+    keys = ("strongBuy", "buy", "hold", "sell", "strongSell")
+    counts = {}
+    for key in keys:
+        try:
+            counts[key] = max(0, int(row.get(key, 0)))
+        except (TypeError, ValueError, OverflowError):
+            counts[key] = 0
+    total = sum(counts.values())
+    if total < 1:
+        return None
+    bullish, bearish = counts["strongBuy"] + counts["buy"], counts["sell"] + counts["strongSell"]
+    consensus = ("Buy consensus" if bullish / total >= 0.6 and bearish / total < 0.2 else
+                 "Sell consensus" if bearish / total >= 0.3 else "Mixed / hold consensus")
+    target_data = targets if isinstance(targets, dict) else {}
+
+    def target(key):
+        try:
+            value = float(target_data[key])
+            return value if pd.notna(value) and value > 0 else None
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+    return {"source": "Yahoo Finance analyst data via yfinance", "period": period, **counts, "total": total,
+            "bullish_pct": bullish / total * 100, "bearish_pct": bearish / total * 100,
+            "consensus": consensus, "target_mean": target("mean"), "target_median": target("median"),
+            "target_low": target("low"), "target_high": target("high"), "target_current": target("current")}
+
+
 def financials(symbol: str) -> dict | None:
     """Reported statements (annual + quarterly), dividends and share count. Yahoo's ratio endpoint (`info`) is
     often blocked, so fundamentals.py computes the ratios itself from these statements."""
@@ -88,9 +127,17 @@ def financials(symbol: str) -> dict | None:
         t = yf.Ticker(ys)
         inc = get(lambda: t.income_stmt)
         if inc is not None:
+            recommendations = get(lambda: t.recommendations_summary)
+            if recommendations is None:
+                recommendations = get(lambda: t.recommendations)
+            try:
+                targets = t.get_analyst_price_targets()
+            except Exception:
+                targets = None
             out = {"income": inc, "qincome": get(lambda: t.quarterly_income_stmt),
                    "balance": get(lambda: t.balance_sheet), "cash": get(lambda: t.cashflow),
                    "dividends": get(lambda: t.dividends), "shares": get(lambda: float(t.fast_info["shares"])),
+                   "analyst": analyst_snapshot(recommendations, targets),
                    **profile(symbol)}
     except Exception:
         out = None

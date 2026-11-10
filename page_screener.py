@@ -71,20 +71,21 @@ def frame(entries: list[dict], style: str, rank: bool = True) -> pd.DataFrame:
 
 
 def show(df: pd.DataFrame) -> None:
-    st.dataframe(df, hide_index=True, width="stretch", column_config={
+    st.dataframe(df, alt="Value-investing stock rankings with valuation, timing, and risk details",
+                 hide_index=True, width="stretch", column_config={
         "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
         "Why": st.column_config.TextColumn("Why", width="large")})
 
 
 st.title("🔎 Stock screener")
-st.caption("Runs the full analysis on every stock in the list — business quality, valuation, price trend, latest "
-           "results, macro / sector backdrop and the final buy call — and ranks the best stocks to buy for your "
-           "holding period.")
+st.caption("Ranks companies by business quality, conservative intrinsic value and margin of safety first; weekly "
+           "price action is used mainly to time entries. Statements and analyst snapshots come from Yahoo only; "
+           "confirm filings independently. Estimates are not guarantees.")
 
 c1, c2, c3 = st.columns([2, 4, 2])
-universe = c1.selectbox("Stocks to screen", screener.UNIVERSES, key="sc_universe")
-style = c2.radio("Holding period", list(screener.STYLES), index=2, format_func=screener.STYLES.get,
-                 horizontal=True, key="sc_style")
+universe = c1.selectbox("Stocks to screen", screener.UNIVERSES, index=4, key="sc_universe")
+style = c2.segmented_control("Holding period", list(screener.STYLES), default="longterm",
+                             format_func=screener.STYLES.get, key="sc_style") or "longterm"
 diversify = c3.checkbox("Max 2 stocks per sector", value=True, key="sc_div",
                         help="Spread the top list across sectors instead of, say, five banks.")
 
@@ -165,9 +166,9 @@ with st.expander("How the score works"):
     st.markdown(f"Score = weighted average of six factor scores (each 0-100). Weights for **{period}**:")
     st.dataframe(pd.DataFrame([w]), hide_index=True)
     st.markdown(
-        "- **Business**: fundamentals score from sales / profit growth, ROE / ROCE, debt, cash flow (grade A-D).\n"
-        "- **Valuation**: attractive 100, fair 65, expensive 25, loss-making 0.\n"
-        "- **Trend**: share of the chart checks that are bullish for this holding period.\n"
+        "- **Business**: fundamentals score from growth, ROE / ROCE (or lender metrics), leverage, cash flow and results.\n"
+        "- **Valuation**: margin of safety against the median of available Graham, earnings, book-value and DCF estimates.\n"
+        "- **Timing**: share of weekly chart checks that are bullish; it has little weight for long-term investing.\n"
         "- **Results**: latest quarter's profit growth vs a year ago (+20% or better = 100, -20% or worse = 0).\n"
         "- **Macro**: sector / macro tailwind 100, neutral 50, headwind 0.\n"
         "- **Final call**: BUY 100, BUY ON DIP 75, START SMALL 60, WAIT 25, AVOID 0.\n\n"
